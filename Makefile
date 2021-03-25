@@ -1,8 +1,8 @@
 BIN = syft
 TEMPDIR = ./.tmp
-RESULTSDIR = $(TEMPDIR)/results
-COVER_REPORT = $(RESULTSDIR)/cover.report
-COVER_TOTAL = $(RESULTSDIR)/cover.total
+RESULTSDIR = test/results
+COVER_REPORT = $(RESULTSDIR)/unit-coverage-details.txt
+COVER_TOTAL = $(RESULTSDIR)/unit-coverage-summary.txt
 LINTCMD = $(TEMPDIR)/golangci-lint run --tests=false --config .golangci.yaml
 ACC_TEST_IMAGE = centos:8.2.2004
 ACC_DIR = ./test/acceptance
@@ -15,17 +15,23 @@ RESET := $(shell tput -T linux sgr0)
 TITLE := $(BOLD)$(PURPLE)
 SUCCESS := $(BOLD)$(GREEN)
 # the quality gate lower threshold for unit test total % coverage (by function statements)
-COVERAGE_THRESHOLD := 68
+COVERAGE_THRESHOLD := 70
 # CI cache busting values; change these if you want CI to not use previous stored cache
-COMPARE_CACHE_BUSTER="f7e689d76a9"
-INTEGRATION_CACHE_BUSTER="789bacdf"
-BOOTSTRAP_CACHE="789bacdf"
+INTEGRATION_CACHE_BUSTER="88738d2f"
+CLI_CACHE_BUSTER="789bacdf"
+BOOTSTRAP_CACHE="c7afb99ad"
 
 ## Build variables
 DISTDIR=./dist
 SNAPSHOTDIR=./snapshot
 GITTREESTATE=$(if $(shell git status --porcelain),dirty,clean)
-SNAPSHOT_CMD=$(shell realpath $(shell pwd)/$(SNAPSHOTDIR)/syft_linux_amd64/syft)
+OS := $(shell uname)
+
+ifeq ($(OS),Darwin)
+	SNAPSHOT_CMD=$(shell realpath $(shell pwd)/$(SNAPSHOTDIR)/$(BIN)-macos_darwin_amd64/$(BIN))
+else
+	SNAPSHOT_CMD=$(shell realpath $(shell pwd)/$(SNAPSHOTDIR)/$(BIN)_linux_amd64/$(BIN))
+endif
 
 ifeq "$(strip $(VERSION))" ""
  override VERSION = $(shell git describe --always --tags --dirty)
@@ -57,6 +63,10 @@ ifndef SNAPSHOTDIR
 	$(error SNAPSHOTDIR is not set)
 endif
 
+ifndef REF_NAME
+	REF_NAME = $(VERSION)
+endif
+
 define title
     @printf '$(TITLE)$(1)$(RESET)\n'
 endef
@@ -68,7 +78,7 @@ all: clean static-analysis test ## Run all linux-based checks (linting, license 
 	@printf '$(SUCCESS)All checks pass!$(RESET)\n'
 
 .PHONY: test
-test: unit validate-cyclonedx-schema integration acceptance-linux ## Run all tests (currently unit, integration, and linux acceptance tests)
+test: unit validate-cyclonedx-schema integration benchmark acceptance-linux cli ## Run all tests (currently unit, integration, linux acceptance, and cli tests)
 
 .PHONY: help
 help:
@@ -82,19 +92,26 @@ ci-bootstrap:
 ci-bootstrap-mac:
 	github_changelog_generator --version || sudo gem install github_changelog_generator
 
-.PHONY: bootstrap
-bootstrap: ## Download and install all go dependencies (+ prep tooling in the ./tmp dir)
-	$(call title,Bootstrapping dependencies)
-	@pwd
-	# prep temp dirs
-	mkdir -p $(TEMPDIR)
+$(RESULTSDIR):
 	mkdir -p $(RESULTSDIR)
-	# install go dependencies
+
+$(TEMPDIR):
+	mkdir -p $(TEMPDIR)
+
+.PHONY: bootstrap-tools
+bootstrap-tools: $(TEMPDIR)
+	GO111MODULE=off GOBIN=$(shell realpath $(TEMPDIR)) go get -u golang.org/x/perf/cmd/benchstat
+	curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b $(TEMPDIR)/ v1.26.0
+	curl -sSfL https://raw.githubusercontent.com/wagoodman/go-bouncer/master/bouncer.sh | sh -s -- -b $(TEMPDIR)/ v0.2.0
+	curl -sfL https://install.goreleaser.com/github.com/goreleaser/goreleaser.sh | sh -s -- -b $(TEMPDIR)/ v0.160.0
+
+.PHONY: bootstrap-go
+bootstrap-go:
 	go mod download
-	# install utilities
-	[ -f "$(TEMPDIR)/golangci" ] || curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b $(TEMPDIR)/ v1.26.0
-	[ -f "$(TEMPDIR)/bouncer" ] || curl -sSfL https://raw.githubusercontent.com/wagoodman/go-bouncer/master/bouncer.sh | sh -s -- -b $(TEMPDIR)/ v0.2.0
-	[ -f "$(TEMPDIR)/goreleaser" ] || curl -sfL https://install.goreleaser.com/github.com/goreleaser/goreleaser.sh | sh -s -- -b $(TEMPDIR)/ v0.140.0
+
+.PHONY: bootstrap
+bootstrap: $(RESULTSDIR) bootstrap-go bootstrap-tools ## Download and install all go dependencies (+ prep tooling in the ./tmp dir)
+	$(call title,Bootstrapping dependencies)
 
 .PHONY: static-analysis
 static-analysis: lint check-licenses
@@ -128,12 +145,25 @@ validate-cyclonedx-schema:
 	cd schema/cyclonedx && make
 
 .PHONY: unit
-unit: fixtures ## Run unit tests (with coverage)
+unit: $(RESULTSDIR) fixtures ## Run unit tests (with coverage)
 	$(call title,Running unit tests)
-	go test -coverprofile $(COVER_REPORT) $(shell go list ./... | grep -v anchore/syft/test)
+	go test  -coverprofile $(COVER_REPORT) $(shell go list ./... | grep -v anchore/syft/test)
 	@go tool cover -func $(COVER_REPORT) | grep total |  awk '{print substr($$3, 1, length($$3)-1)}' > $(COVER_TOTAL)
 	@echo "Coverage: $$(cat $(COVER_TOTAL))"
 	@if [ $$(echo "$$(cat $(COVER_TOTAL)) >= $(COVERAGE_THRESHOLD)" | bc -l) -ne 1 ]; then echo "$(RED)$(BOLD)Failed coverage quality gate (> $(COVERAGE_THRESHOLD)%)$(RESET)" && false; fi
+
+.PHONY: benchmark
+benchmark: $(RESULTSDIR) ## Run benchmark tests and compare against the baseline (if available)
+	$(call title,Running benchmark tests)
+	go test -p 1 -run=^Benchmark -bench=. -count=5 -benchmem ./... | tee $(RESULTSDIR)/benchmark-$(REF_NAME).txt
+	(test -s $(RESULTSDIR)/benchmark-main.txt && \
+		$(TEMPDIR)/benchstat $(RESULTSDIR)/benchmark-main.txt $(RESULTSDIR)/benchmark-$(REF_NAME).txt || \
+		$(TEMPDIR)/benchstat $(RESULTSDIR)/benchmark-$(REF_NAME).txt) \
+			| tee $(RESULTSDIR)/benchstat.txt
+
+.PHONY: show-benchstat
+show-benchstat:
+	@cat $(RESULTSDIR)/benchstat.txt
 
 .PHONY: integration
 integration: ## Run integration tests
@@ -141,28 +171,23 @@ integration: ## Run integration tests
 
 	go test -v ./test/integration
 
-
 # note: this is used by CI to determine if the integration test fixture cache (docker image tars) should be busted
 integration-fingerprint:
 	find test/integration/test-fixtures/image-* -type f -exec md5sum {} + | awk '{print $1}' | sort | md5sum | tee test/integration/test-fixtures/cache.fingerprint && echo "$(INTEGRATION_CACHE_BUSTER)" >> test/integration/test-fixtures/cache.fingerprint
 
 .PHONY: java-packages-fingerprint
 java-packages-fingerprint:
-	@cd syft/cataloger/java/test-fixtures/java-builds && \
+	@cd syft/pkg/cataloger/java/test-fixtures/java-builds && \
 	make packages.fingerprint
 
 .PHONY: fixtures
 fixtures:
 	$(call title,Generating test fixtures)
-	cd syft/cataloger/java/test-fixtures/java-builds && make
+	cd syft/pkg/cataloger/java/test-fixtures/java-builds && make
 
 .PHONY: generate-json-schema
 generate-json-schema:  ## Generate a new json schema
 	cd schema/json && go run generate.go
-
-.PHONY: clear-test-cache
-clear-test-cache: ## Delete all test cache (built docker image tars)
-	find . -type f -wholename "**/test-fixtures/cache/*.tar" -delete
 
 .PHONY: build
 build: $(SNAPSHOTDIR) ## Build release snapshot binaries and packages
@@ -175,11 +200,11 @@ $(SNAPSHOTDIR): ## Build snapshot release binaries and packages
 
 	# build release snapshots
 	BUILD_GIT_TREE_STATE=$(GITTREESTATE) \
-	$(TEMPDIR)/goreleaser release --skip-publish --rm-dist --snapshot --config $(TEMPDIR)/goreleaser.yaml
+	$(TEMPDIR)/goreleaser release --skip-publish --skip-sign --rm-dist --snapshot --config $(TEMPDIR)/goreleaser.yaml
 
 # note: we cannot clean the snapshot directory since the pipeline builds the snapshot separately
 .PHONY: acceptance-mac
-acceptance-mac: $(SNAPSHOTDIR) ## Run acceptance tests on build snapshot binaries and packages (Mac)
+acceptance-mac: $(RESULTSDIR) $(SNAPSHOTDIR) ## Run acceptance tests on build snapshot binaries and packages (Mac)
 	$(call title,Running acceptance test: Run on Mac)
 	$(ACC_DIR)/mac.sh \
 			$(SNAPSHOTDIR) \
@@ -191,22 +216,8 @@ acceptance-mac: $(SNAPSHOTDIR) ## Run acceptance tests on build snapshot binarie
 .PHONY: acceptance-linux
 acceptance-linux: acceptance-test-deb-package-install acceptance-test-rpm-package-install ## Run acceptance tests on build snapshot binaries and packages (Linux)
 
-# note: this is used by CI to determine if the inline-scan report cache should be busted for the inline-compare tests
-.PHONY: compare-fingerprint
-compare-fingerprint:
-	find test/inline-compare/* -type f -exec md5sum {} + | grep -v '\-reports' | grep -v 'fingerprint' | awk '{print $1}' | sort | md5sum | tee test/inline-compare/inline-compare.fingerprint && echo "$(COMPARE_CACHE_BUSTER)" >> test/inline-compare/inline-compare.fingerprint
-
-.PHONY: compare-snapshot
-compare-snapshot: $(SNAPSHOTDIR) ## Compare the reports of a run of a snapshot build of syft against inline-scan
-	chmod 755 $(SNAPSHOT_CMD)
-	@cd test/inline-compare && SYFT_CMD=$(SNAPSHOT_CMD) make
-
-.PHONY: compare
-compare:  ## Compare the reports of a run of a main-branch build of syft against inline-scan
-	@cd test/inline-compare && make
-
 .PHONY: acceptance-test-deb-package-install
-acceptance-test-deb-package-install: $(SNAPSHOTDIR)
+acceptance-test-deb-package-install: $(RESULTSDIR) $(SNAPSHOTDIR)
 	$(call title,Running acceptance test: DEB install)
 	$(ACC_DIR)/deb.sh \
 			$(SNAPSHOTDIR) \
@@ -215,7 +226,7 @@ acceptance-test-deb-package-install: $(SNAPSHOTDIR)
 			$(RESULTSDIR)
 
 .PHONY: acceptance-test-rpm-package-install
-acceptance-test-rpm-package-install: $(SNAPSHOTDIR)
+acceptance-test-rpm-package-install: $(RESULTSDIR) $(SNAPSHOTDIR)
 	$(call title,Running acceptance test: RPM install)
 	$(ACC_DIR)/rpm.sh \
 			$(SNAPSHOTDIR) \
@@ -223,11 +234,23 @@ acceptance-test-rpm-package-install: $(SNAPSHOTDIR)
 			$(ACC_TEST_IMAGE) \
 			$(RESULTSDIR)
 
+# note: this is used by CI to determine if the integration test fixture cache (docker image tars) should be busted
+cli-fingerprint:
+	find test/cli/test-fixtures/image-* -type f -exec md5sum {} + | awk '{print $1}' | sort | md5sum | tee test/cli/test-fixtures/cache.fingerprint && echo "$(CLI_CACHE_BUSTER)" >> test/cli/test-fixtures/cache.fingerprint
+
+.PHONY: cli
+cli: $(SNAPSHOTDIR) ## Run CLI tests
+	chmod 755 "$(SNAPSHOT_CMD)"
+	$(SNAPSHOT_CMD) version
+	SYFT_BINARY_LOCATION='$(SNAPSHOT_CMD)' \
+		go test -count=1 -v ./test/cli
+
 .PHONY: changlog-release
 changelog-release:
 	@echo "Last tag: $(SECOND_TO_LAST_TAG)"
-	@echo "Current tag: $(VERSION)"
-	@github_changelog_generator \
+	@docker run --rm \
+		-v "$(shell pwd)":/usr/local/src/your-app \
+		ferrarimarco/github-changelog-generator \
 		--user anchore \
 		--project $(BIN) \
 		-t ${GITHUB_TOKEN} \
@@ -259,7 +282,7 @@ changelog-unreleased: ## show the current changelog that will be produced on the
 			/CHANGELOG.md
 
 .PHONY: release
-release: clean-dist ci-bootstrap-mac changelog-release ## Build and publish final binaries and packages. Intended to be run only on macOS.
+release: clean-dist changelog-release ## Build and publish final binaries and packages. Intended to be run only on macOS.
 	$(call title,Publishing release artifacts)
 
 	# Prepare for macOS-specific signing process
@@ -284,8 +307,9 @@ release: clean-dist ci-bootstrap-mac changelog-release ## Build and publish fina
 	# upload the version file that supports the application version update check (excluding pre-releases)
 	.github/scripts/update-version-file.sh "$(DISTDIR)" "$(VERSION)"
 
+
 .PHONY: clean
-clean: clean-dist clean-snapshot ## Remove previous builds and result reports
+clean: clean-dist clean-snapshot clean-test-image-cache ## Remove previous builds, result reports, and test cache
 	rm -rf $(RESULTSDIR)/*
 
 .PHONY: clean-snapshot
@@ -295,3 +319,26 @@ clean-snapshot:
 .PHONY: clean-dist
 clean-dist:
 	rm -rf $(DISTDIR) $(TEMPDIR)/goreleaser.yaml
+
+clean-test-image-cache: clean-test-image-tar-cache clean-test-image-docker-cache
+
+.PHONY: clear-test-image-tar-cache
+clean-test-image-tar-cache: ## Delete all test cache (built docker image tars)
+	find . -type f -wholename "**/test-fixtures/cache/stereoscope-fixture-*.tar" -delete
+
+.PHONY: clear-test-image-docker-cache
+clean-test-image-docker-cache: ## Purge all test docker images
+	docker images --format '{{.ID}} {{.Repository}}' | grep stereoscope-fixture- | awk '{print $$1}' | uniq | xargs docker rmi --force
+
+.PHONY: show-test-image-cache
+show-test-image-cache: ## Show all docker and image tar cache
+	$(call title,Docker daemon cache)
+	@docker images --format '{{.ID}} {{.Repository}}:{{.Tag}}' | grep stereoscope-fixture- | sort
+
+	$(call title,Tar cache)
+	@find . -type f -wholename "**/test-fixtures/cache/stereoscope-fixture-*.tar" | sort
+
+.PHONY: show-test-snapshots
+show-test-snapshots: ## Show all test snapshots
+	$(call title,Test snapshots)
+	@find . -type f -wholename "**/test-fixtures/snapshot/*" | sort
