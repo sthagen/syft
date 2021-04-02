@@ -7,36 +7,21 @@ import (
 	"io"
 	"strings"
 
+	"github.com/anchore/syft/internal/log"
+
+	"github.com/anchore/syft/internal/bus"
+	"github.com/anchore/syft/syft/event"
+	"github.com/wagoodman/go-partybus"
+	"github.com/wagoodman/go-progress"
+
 	"github.com/anchore/syft/syft/source"
 )
-
-var supportedHashAlgorithms = make(map[string]crypto.Hash)
 
 type DigestsCataloger struct {
 	hashes []crypto.Hash
 }
 
-func init() {
-	for _, h := range []crypto.Hash{
-		crypto.MD5,
-		crypto.SHA1,
-		crypto.SHA256,
-	} {
-		supportedHashAlgorithms[cleanAlgorithmName(h.String())] = h
-	}
-}
-
-func NewDigestsCataloger(hashAlgorithms []string) (*DigestsCataloger, error) {
-	var hashes []crypto.Hash
-	for _, hashStr := range hashAlgorithms {
-		name := cleanAlgorithmName(hashStr)
-		hashObj, ok := supportedHashAlgorithms[name]
-		if !ok {
-			return nil, fmt.Errorf("unsupported hash algorithm: %s", hashStr)
-		}
-		hashes = append(hashes, hashObj)
-	}
-
+func NewDigestsCataloger(hashes []crypto.Hash) (*DigestsCataloger, error) {
 	return &DigestsCataloger{
 		hashes: hashes,
 	}, nil
@@ -44,13 +29,22 @@ func NewDigestsCataloger(hashAlgorithms []string) (*DigestsCataloger, error) {
 
 func (i *DigestsCataloger) Catalog(resolver source.FileResolver) (map[source.Location][]Digest, error) {
 	results := make(map[source.Location][]Digest)
+	var locations []source.Location
 	for location := range resolver.AllLocations() {
+		locations = append(locations, location)
+	}
+	stage, prog := digestsCatalogingProgress(int64(len(locations)))
+	for _, location := range locations {
+		stage.Current = location.RealPath
 		result, err := i.catalogLocation(resolver, location)
 		if err != nil {
 			return nil, err
 		}
+		prog.N++
 		results[location] = result
 	}
+	log.Debugf("file digests cataloger processed %d files", prog.N)
+	prog.SetCompleted()
 	return results, nil
 }
 
@@ -74,23 +68,49 @@ func (i *DigestsCataloger) catalogLocation(resolver source.FileResolver, locatio
 		return nil, fmt.Errorf("unable to observe contents of %+v: %+v", location.RealPath, err)
 	}
 
+	if size == 0 {
+		return make([]Digest, 0), nil
+	}
+
 	result := make([]Digest, len(i.hashes))
-	if size > 0 {
-		// only capture digests when there is content. It is important to do this based on SIZE and not
-		// FILE TYPE. The reasoning is that it is possible for a tar to be crafted with a header-only
-		// file type but a body is still allowed.
-		for idx, hasher := range hashers {
-			result[idx] = Digest{
-				Algorithm: cleanAlgorithmName(i.hashes[idx].String()),
-				Value:     fmt.Sprintf("%+x", hasher.Sum(nil)),
-			}
+	// only capture digests when there is content. It is important to do this based on SIZE and not
+	// FILE TYPE. The reasoning is that it is possible for a tar to be crafted with a header-only
+	// file type but a body is still allowed.
+	for idx, hasher := range hashers {
+		result[idx] = Digest{
+			Algorithm: DigestAlgorithmName(i.hashes[idx]),
+			Value:     fmt.Sprintf("%+x", hasher.Sum(nil)),
 		}
 	}
 
 	return result, nil
 }
 
-func cleanAlgorithmName(name string) string {
+func DigestAlgorithmName(hash crypto.Hash) string {
+	return CleanDigestAlgorithmName(hash.String())
+}
+
+func CleanDigestAlgorithmName(name string) string {
 	lower := strings.ToLower(name)
 	return strings.Replace(lower, "-", "", -1)
+}
+
+func digestsCatalogingProgress(locations int64) (*progress.Stage, *progress.Manual) {
+	stage := &progress.Stage{}
+	prog := &progress.Manual{
+		Total: locations,
+	}
+
+	bus.Publish(partybus.Event{
+		Type: event.FileDigestsCatalogerStarted,
+		Value: struct {
+			progress.Stager
+			progress.Progressable
+		}{
+			Stager:       progress.Stager(stage),
+			Progressable: prog,
+		},
+	})
+
+	return stage, prog
 }
