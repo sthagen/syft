@@ -1,4 +1,12 @@
 {
+ "fileContents": [
+  {
+   "location": {
+    "path": "/a/place/a"
+   },
+   "contents": "the-contents"
+  }
+ ],
  "fileMetadata": [
   {
    "location": {
@@ -161,21 +169,21 @@
    "configPath": "",
    "output": "",
    "quiet": false,
-   "log": {
-    "structured": false,
-    "level": "",
-    "file-location": ""
-   },
-   "dev": {
-    "profile-cpu": false,
-    "profile-mem": false
-   },
    "check-for-app-update": false,
    "anchore": {
     "host": "",
     "path": "",
     "dockerfile": "",
     "overwrite-existing-image": false
+   },
+   "dev": {
+    "profile-cpu": false,
+    "profile-mem": false
+   },
+   "log": {
+    "structured": false,
+    "level": "",
+    "file-location": ""
    },
    "package": {
     "cataloger": {
@@ -192,6 +200,20 @@
      "sha256"
     ]
    },
+   "file-classification": {
+    "cataloger": {
+     "enabled": false,
+     "scope": ""
+    }
+   },
+   "file-contents": {
+    "cataloger": {
+     "enabled": false,
+     "scope": ""
+    },
+    "skip-files-above-size": 0,
+    "globs": null
+   },
    "secrets": {
     "cataloger": {
      "enabled": false,
@@ -201,11 +223,15 @@
     "exclude-pattern-names": null,
     "reveal-values": false,
     "skip-files-above-size": 0
+   },
+   "registry": {
+    "insecure-skip-tls-verify": false,
+    "auth": null
    }
   }
  },
  "schema": {
-  "version": "1.0.5",
-  "url": "https://raw.githubusercontent.com/anchore/syft/main/schema/json/schema-1.0.5.json"
+  "version": "1.1.0",
+  "url": "https://raw.githubusercontent.com/anchore/syft/main/schema/json/schema-1.1.0.json"
  }
 }

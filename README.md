@@ -45,6 +45,16 @@ syft packages path/to/image.tar
 syft packages path/to/dir
 ```
 
+Sources can be explicitly provided with a scheme:
+```
+docker:yourrepo/yourimage:tag          use images from the Docker daemon
+docker-archive:path/to/yourimage.tar   use a tarball from disk for archives created from "docker save"
+oci-archive:path/to/yourimage.tar      use a tarball from disk for OCI archives (from Skopeo or otherwise)
+oci-dir:path/to/yourimage              read directly from a path on disk for OCI layout directories (from Skopeo or otherwise)
+dir:path/to/yourproject                read directly from a path on disk (any directory)
+registry:yourrepo/yourimage:tag        pull image directly from a registry (no container runtime required)
+```
+
 The output format for Syft is configurable as well:
 ```
 syft packages <image> -o <format>
@@ -108,6 +118,36 @@ package:
     # same as -s ; SYFT_PACKAGE_CATALOGER_SCOPE env var
     scope: "squashed"
 
+# cataloging file classifications is exposed through the power-user subcommand
+file-classification:
+  cataloger:
+    # enable/disable cataloging of file classifications
+    # SYFT_FILE_CLASSIFICATION_CATALOGER_ENABLED env var
+    enabled: true
+
+    # the search space to look for file classifications (options: all-layers, squashed)
+    # SYFT_FILE_CLASSIFICATION_CATALOGER_SCOPE env var
+    scope: "squashed"
+
+# cataloging file contents is exposed through the power-user subcommand
+file-contents:
+  cataloger:
+    # enable/disable cataloging of secrets
+    # SYFT_FILE_CONTENTS_CATALOGER_ENABLED env var
+    enabled: true
+
+    # the search space to look for secrets (options: all-layers, squashed)
+    # SYFT_FILE_CONTENTS_CATALOGER_SCOPE env var
+    scope: "squashed"
+
+  # skip searching a file entirely if it is above the given size (default = 1MB; unit = bytes)
+  # SYFT_FILE_CONTENTS_SKIP_FILES_ABOVE_SIZE env var
+  skip-files-above-size: 1048576
+
+  # file globs for the cataloger to match on
+  # SYFT_FILE_CONTENTS_GLOBS env var
+  globs: []
+
 # cataloging file metadata is exposed through the power-user subcommand
 file-metadata:
   cataloger:
@@ -138,9 +178,9 @@ secrets:
   # SYFT_SECRETS_REVEAL_VALUES env var
   reveal-values: false
 
-  # skip searching a file entirely if it is above the given size (default = 10MB; unit = bytes)
+  # skip searching a file entirely if it is above the given size (default = 1MB; unit = bytes)
   # SYFT_SECRETS_SKIP_FILES_ABOVE_SIZE env var
-  skip-files-above-size: 10485760
+  skip-files-above-size: 1048576
 
   # name-regex pairs to consider when searching files for secrets. Note: the regex must match single line patterns
   # but may also have OPTIONAL multiline capture groups. Regexes with a named capture group of "value" will
@@ -153,6 +193,26 @@ secrets:
   # "secrets.additional-patterns" config option.
   # SYFT_SECRETS_EXCLUDE_PATTERN_NAMES env var
   exclude-pattern-names: []
+
+# options when pulling directly from a registry via the "registry:" scheme
+registry:
+  # skip TLS verification when communicating with the registry
+  # SYFT_REGISTRY_INSECURE_SKIP_TLS_VERIFY env var
+  insecure-skip-tls-verify: false
+
+  # credentials for specific registries
+  auth:
+    - # the URL to the registry (e.g. "docker.io", "localhost:5000", etc.)
+      # SYFT_REGISTRY_AUTH_AUTHORITY env var
+      authority: ""
+      # SYFT_REGISTRY_AUTH_USERNAME env var
+      username: ""
+      # SYFT_REGISTRY_AUTH_PASSWORD env var
+      password: ""
+      # note: token and username/password are mutually exclusive
+      # SYFT_REGISTRY_AUTH_TOKEN env var
+      token: ""
+    - ... # note, more credentials can be provided via config file only
 
 log:
   # use structured logging
