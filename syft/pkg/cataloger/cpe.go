@@ -10,8 +10,70 @@ import (
 	"github.com/facebookincubator/nvdtools/wfn"
 )
 
-// this is functionally equivalent to "*" and consistent with no input given (thus easier to test)
-const any = ""
+var productCandidatesByPkgType = candidateStore{
+	pkg.JavaPkg: {
+		"springframework": []string{"spring_framework", "springsource_spring_framework"},
+		"spring-core":     []string{"spring_framework", "springsource_spring_framework"},
+	},
+	pkg.NpmPkg: {
+		"hapi":             []string{"hapi_server_framework"},
+		"handlebars.js":    []string{"handlebars"},
+		"is-my-json-valid": []string{"is_my_json_valid"},
+		"mustache":         []string{"mustache.js"},
+	},
+	pkg.GemPkg: {
+		"Arabic-Prawn":        []string{"arabic_prawn"},
+		"bio-basespace-sdk":   []string{"basespace_ruby_sdk"},
+		"cremefraiche":        []string{"creme_fraiche"},
+		"html-sanitizer":      []string{"html_sanitizer"},
+		"sentry-raven":        []string{"raven-ruby"},
+		"RedCloth":            []string{"redcloth_library"},
+		"VladTheEnterprising": []string{"vladtheenterprising"},
+		"yajl-ruby":           []string{"yajl-ruby_gem"},
+	},
+	pkg.PythonPkg: {
+		"python-rrdtool": []string{"rrdtool"},
+	},
+}
+
+var cpeFilters = []filterFn{
+	func(cpe pkg.CPE, p pkg.Package) bool {
+		// jira / atlassian should not apply to clients
+		if cpe.Product == "jira" && strings.Contains(strings.ToLower(p.Name), "client") {
+			if cpe.Vendor == wfn.Any || cpe.Vendor == "jira" || cpe.Vendor == "atlassian" {
+				return true
+			}
+		}
+		return false
+	},
+	// nolint: goconst
+	func(cpe pkg.CPE, p pkg.Package) bool {
+		// jenkins server should only match against a product with the name jenkins
+		if cpe.Product == "jenkins" && !strings.Contains(strings.ToLower(p.Name), "jenkins") {
+			if cpe.Vendor == wfn.Any || cpe.Vendor == "jenkins" || cpe.Vendor == "cloudbees" {
+				return true
+			}
+		}
+		return false
+	},
+}
+
+type filterFn func(cpe pkg.CPE, p pkg.Package) bool
+
+// this is a static mapping of known package names (keys) to official cpe names for each package
+type candidateStore map[pkg.Type]map[string][]string
+
+func (s candidateStore) getCandidates(t pkg.Type, key string) []string {
+	if _, ok := s[t]; !ok {
+		return nil
+	}
+	value, ok := s[t][key]
+	if !ok {
+		return nil
+	}
+
+	return value
+}
 
 func newCPE(product, vendor, version, targetSW string) wfn.Attributes {
 	cpe := *(wfn.NewAttributesWithAny())
@@ -24,6 +86,20 @@ func newCPE(product, vendor, version, targetSW string) wfn.Attributes {
 	return cpe
 }
 
+func filterCpes(cpes []pkg.CPE, p pkg.Package, filters ...filterFn) (result []pkg.CPE) {
+cpeLoop:
+	for _, cpe := range cpes {
+		for _, fn := range filters {
+			if fn(cpe, p) {
+				continue cpeLoop
+			}
+		}
+		// all filter functions passed on filtering this CPE
+		result = append(result, cpe)
+	}
+	return result
+}
+
 // generatePackageCPEs Create a list of CPEs, trying to guess the vendor, product tuple and setting TargetSoftware if possible
 func generatePackageCPEs(p pkg.Package) []pkg.CPE {
 	targetSws := candidateTargetSoftwareAttrs(p)
@@ -33,8 +109,8 @@ func generatePackageCPEs(p pkg.Package) []pkg.CPE {
 	keys := internal.NewStringSet()
 	cpes := make([]pkg.CPE, 0)
 	for _, product := range products {
-		for _, vendor := range append([]string{any}, vendors...) {
-			for _, targetSw := range append([]string{any}, targetSws...) {
+		for _, vendor := range append([]string{wfn.Any}, vendors...) {
+			for _, targetSw := range append([]string{wfn.Any}, targetSws...) {
 				// prevent duplicate entries...
 				key := fmt.Sprintf("%s|%s|%s|%s", product, vendor, p.Version, targetSw)
 				if keys.Contains(key) {
@@ -49,6 +125,9 @@ func generatePackageCPEs(p pkg.Package) []pkg.CPE {
 		}
 	}
 
+	// filter out any known combinations that don't accurately represent this package
+	cpes = filterCpes(cpes, p, cpeFilters...)
+
 	sort.Sort(ByCPESpecificity(cpes))
 
 	return cpes
@@ -59,7 +138,7 @@ func candidateTargetSoftwareAttrs(p pkg.Package) []string {
 	var targetSw []string
 	switch p.Language {
 	case pkg.Java:
-		targetSw = append(targetSw, "java", "maven")
+		targetSw = append(targetSw, candidateTargetSoftwareAttrsForJava(p)...)
 	case pkg.JavaScript:
 		targetSw = append(targetSw, "node.js", "nodejs")
 	case pkg.Ruby:
@@ -68,51 +147,115 @@ func candidateTargetSoftwareAttrs(p pkg.Package) []string {
 		targetSw = append(targetSw, "python")
 	}
 
-	if p.Type == pkg.JenkinsPluginPkg {
-		targetSw = append(targetSw, "jenkins", "cloudbees_jenkins")
-	}
-
 	return targetSw
 }
 
+func candidateTargetSoftwareAttrsForJava(p pkg.Package) []string {
+	// Use the more specific indicator if available
+	if p.Type == pkg.JenkinsPluginPkg {
+		return []string{"jenkins", "cloudbees_jenkins"}
+	}
+
+	return []string{"java", "maven"}
+}
+
 func candidateVendors(p pkg.Package) []string {
+	// TODO: Confirm whether using products as vendors is helpful to the matching process
 	vendors := candidateProducts(p)
-	switch p.Language {
-	case pkg.Python:
-		vendors = append(vendors, fmt.Sprintf("python-%s", p.Name))
-	case pkg.Java:
+
+	if p.Language == pkg.Java {
 		if p.MetadataType == pkg.JavaMetadataType {
-			if metadata, ok := p.Metadata.(pkg.JavaMetadata); ok && metadata.PomProperties != nil {
-				// derive the vendor from the groupID (e.g. org.sonatype.nexus --> sonatype)
-				if strings.HasPrefix(metadata.PomProperties.GroupID, "org.") || strings.HasPrefix(metadata.PomProperties.GroupID, "com.") {
-					fields := strings.Split(metadata.PomProperties.GroupID, ".")
-					if len(fields) >= 3 {
-						vendors = append(vendors, fields[1])
-					}
-				}
-			}
+			vendors = append(vendors, candidateVendorsForJava(p)...)
 		}
 	}
 	return vendors
 }
 
 func candidateProducts(p pkg.Package) []string {
-	var products = []string{p.Name}
+	products := []string{p.Name}
+
 	switch p.Language {
-	case pkg.Java:
-		if p.MetadataType == pkg.JavaMetadataType {
-			if metadata, ok := p.Metadata.(pkg.JavaMetadata); ok && metadata.PomProperties != nil {
-				// derive the product from the groupID (e.g. org.sonatype.nexus --> nexus)
-				if strings.HasPrefix(metadata.PomProperties.GroupID, "org.") || strings.HasPrefix(metadata.PomProperties.GroupID, "com.") {
-					fields := strings.Split(metadata.PomProperties.GroupID, ".")
-					if len(fields) >= 3 {
-						products = append(products, fields[2])
-					}
-				}
-			}
+	case pkg.Python:
+		if !strings.HasPrefix(p.Name, "python") {
+			products = append(products, "python-"+p.Name)
 		}
-	default:
-		return products
+	case pkg.Java:
+		products = append(products, candidateProductsForJava(p)...)
 	}
-	return products
+
+	for _, prod := range products {
+		if strings.Contains(prod, "-") {
+			products = append(products, strings.ReplaceAll(prod, "-", "_"))
+		}
+	}
+
+	// return any known product name swaps prepended to the results
+	return append(productCandidatesByPkgType.getCandidates(p.Type, p.Name), products...)
+}
+
+func candidateProductsForJava(p pkg.Package) []string {
+	// TODO: we could get group-id-like info from the MANIFEST.MF "Automatic-Module-Name" field
+	// for more info see pkg:maven/commons-io/commons-io@2.8.0 within cloudbees/cloudbees-core-mm:2.263.4.2
+	// at /usr/share/jenkins/jenkins.war:WEB-INF/plugins/analysis-model-api.hpi:WEB-INF/lib/commons-io-2.8.0.jar
+	if product, _ := productAndVendorFromPomPropertiesGroupID(p); product != "" {
+		// ignore group ID info from a jenkins plugin, as using this info may imply that this package
+		// CPE belongs to the cloudbees org (or similar) which is wrong.
+		if p.Type == pkg.JenkinsPluginPkg && strings.ToLower(product) == "jenkins" {
+			return nil
+		}
+		return []string{product}
+	}
+
+	return nil
+}
+
+func candidateVendorsForJava(p pkg.Package) []string {
+	if _, vendor := productAndVendorFromPomPropertiesGroupID(p); vendor != "" {
+		return []string{vendor}
+	}
+
+	return nil
+}
+
+func productAndVendorFromPomPropertiesGroupID(p pkg.Package) (string, string) {
+	groupID := groupIDFromPomProperties(p)
+	if !shouldConsiderGroupID(groupID) {
+		return "", ""
+	}
+
+	if !internal.HasAnyOfPrefixes(groupID, "com", "org") {
+		return "", ""
+	}
+
+	fields := strings.Split(groupID, ".")
+	if len(fields) < 3 {
+		return "", ""
+	}
+
+	product := fields[2]
+	vendor := fields[1]
+	return product, vendor
+}
+
+func groupIDFromPomProperties(p pkg.Package) string {
+	metadata, ok := p.Metadata.(pkg.JavaMetadata)
+	if !ok {
+		return ""
+	}
+
+	if metadata.PomProperties == nil {
+		return ""
+	}
+
+	return metadata.PomProperties.GroupID
+}
+
+func shouldConsiderGroupID(groupID string) bool {
+	if groupID == "" {
+		return false
+	}
+
+	excludedGroupIDs := append([]string{pkg.JiraPluginPomPropertiesGroupID}, pkg.JenkinsPluginPomPropertiesGroupIDs...)
+
+	return !internal.HasAnyOfPrefixes(groupID, excludedGroupIDs...)
 }

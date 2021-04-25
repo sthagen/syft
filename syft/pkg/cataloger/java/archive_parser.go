@@ -7,7 +7,6 @@ import (
 
 	"github.com/anchore/syft/internal/log"
 
-	"github.com/anchore/syft/internal"
 	"github.com/anchore/syft/internal/file"
 	"github.com/anchore/syft/syft/pkg"
 	"github.com/anchore/syft/syft/pkg/cataloger/common"
@@ -25,13 +24,12 @@ var archiveFormatGlobs = []string{
 }
 
 type archiveParser struct {
-	discoveredPkgs internal.StringSet
-	fileManifest   file.ZipFileManifest
-	virtualPath    string
-	archivePath    string
-	contentPath    string
-	fileInfo       archiveFilename
-	detectNested   bool
+	fileManifest file.ZipFileManifest
+	virtualPath  string
+	archivePath  string
+	contentPath  string
+	fileInfo     archiveFilename
+	detectNested bool
 }
 
 // parseJavaArchive is a parser function for java archive contents, returning all Java libraries and nested archives.
@@ -71,13 +69,12 @@ func newJavaArchiveParser(virtualPath string, reader io.Reader, detectNested boo
 	currentFilepath := virtualElements[len(virtualElements)-1]
 
 	return &archiveParser{
-		discoveredPkgs: internal.NewStringSet(),
-		fileManifest:   fileManifest,
-		virtualPath:    virtualPath,
-		archivePath:    archivePath,
-		contentPath:    contentPath,
-		fileInfo:       newJavaArchiveFilename(currentFilepath),
-		detectNested:   detectNested,
+		fileManifest: fileManifest,
+		virtualPath:  virtualPath,
+		archivePath:  archivePath,
+		contentPath:  contentPath,
+		fileInfo:     newJavaArchiveFilename(currentFilepath),
+		detectNested: detectNested,
 	}, cleanupFn, nil
 }
 
@@ -91,30 +88,24 @@ func (j *archiveParser) parse() ([]pkg.Package, error) {
 		return nil, fmt.Errorf("could not generate package from %s: %w", j.virtualPath, err)
 	}
 
-	// don't add the parent package yet, we still may discover aux info to add to the metadata (but still track it as added to prevent duplicates)
-	parentKey := uniquePkgKey(parentPkg)
-	if parentKey != "" {
-		j.discoveredPkgs.Add(parentKey)
-	}
-
-	// find aux packages from pom.properties
-	auxPkgs, err := j.discoverPkgsFromPomProperties(parentPkg)
+	// find aux packages from pom.properties and potentially modify the existing parentPkg
+	auxPkgs, err := j.discoverPkgsFromAllPomProperties(parentPkg)
 	if err != nil {
 		return nil, err
 	}
 	pkgs = append(pkgs, auxPkgs...)
 
-	// find nested java archive packages
-	nestedPkgs, err := j.discoverPkgsFromNestedArchives(parentPkg)
-	if err != nil {
-		return nil, err
+	if j.detectNested {
+		// find nested java archive packages
+		nestedPkgs, err := j.discoverPkgsFromNestedArchives(parentPkg)
+		if err != nil {
+			return nil, err
+		}
+		pkgs = append(pkgs, nestedPkgs...)
 	}
-	pkgs = append(pkgs, nestedPkgs...)
 
 	// lastly, add the parent package to the list (assuming the parent exists)
 	if parentPkg != nil {
-		// only the parent package gets the type, nested packages may be of a different package type (or not of a package type at all, since they may not be bundled)
-		parentPkg.Type = j.fileInfo.pkgType()
 		pkgs = append([]pkg.Package{*parentPkg}, pkgs...)
 	}
 
@@ -150,7 +141,7 @@ func (j *archiveParser) discoverMainPackage() (*pkg.Package, error) {
 		Name:         selectName(manifest, j.fileInfo),
 		Version:      selectVersion(manifest, j.fileInfo),
 		Language:     pkg.Java,
-		Type:         pkg.JavaPkg,
+		Type:         j.fileInfo.pkgType(),
 		MetadataType: pkg.JavaMetadataType,
 		Metadata: pkg.JavaMetadata{
 			VirtualPath: j.virtualPath,
@@ -159,104 +150,84 @@ func (j *archiveParser) discoverMainPackage() (*pkg.Package, error) {
 	}, nil
 }
 
-// discoverPkgsFromPomProperties parses Maven POM properties for a given parent package, returning all listed Java packages found and
-// associating each discovered package to the given parent package.
-// nolint:funlen,gocognit
-func (j *archiveParser) discoverPkgsFromPomProperties(parentPkg *pkg.Package) ([]pkg.Package, error) {
-	var pkgs = make([]pkg.Package, 0)
-	parentKey := uniquePkgKey(parentPkg)
+// discoverPkgsFromAllPomProperties parses Maven POM properties for a given
+// parent package, returning all listed Java packages found for each pom
+// properties discovered and potentially updating the given parentPkg with new
+// data.
+func (j *archiveParser) discoverPkgsFromAllPomProperties(parentPkg *pkg.Package) ([]pkg.Package, error) {
+	if parentPkg == nil {
+		return nil, nil
+	}
+
+	var pkgs []pkg.Package
 
 	// search and parse pom.properties files & fetch the contents
-	contents, err := file.ContentsFromZip(j.archivePath, j.fileManifest.GlobMatch(pomPropertiesGlob)...)
+	contentsOfPomPropertiesFiles, err := file.ContentsFromZip(j.archivePath, j.fileManifest.GlobMatch(pomPropertiesGlob)...)
 	if err != nil {
 		return nil, fmt.Errorf("unable to extract pom.properties: %w", err)
 	}
 
-	// parse the manifest file into a rich object
-	for propsPath, propsContents := range contents {
-		propsObj, err := parsePomProperties(propsPath, strings.NewReader(propsContents))
+	for filePath, fileContents := range contentsOfPomPropertiesFiles {
+		// parse the pom properties file into a rich object
+		pomProperties, err := parsePomProperties(filePath, strings.NewReader(fileContents))
 		if err != nil {
 			log.Warnf("failed to parse pom.properties (%s): %+v", j.virtualPath, err)
 			continue
 		}
 
-		if propsObj == nil {
+		if pomProperties == nil {
 			continue
 		}
 
-		if propsObj.Version != "" && propsObj.ArtifactID != "" {
+		if pomProperties.Version == "" || pomProperties.ArtifactID == "" {
 			// TODO: if there is no parentPkg (no java manifest) one of these poms could be the parent. We should discover the right parent and attach the correct info accordingly to each discovered package
+			continue
+		}
 
-			// keep the artifact name within the virtual path if this package does not match the parent package
-			vPathSuffix := ""
-			if parentPkg != nil && !strings.HasPrefix(propsObj.ArtifactID, parentPkg.Name) {
-				vPathSuffix += ":" + propsObj.ArtifactID
-			}
-			virtualPath := j.virtualPath + vPathSuffix
-
-			// discovered props = new package
-			p := pkg.Package{
-				Name:         propsObj.ArtifactID,
-				Version:      propsObj.Version,
-				Language:     pkg.Java,
-				Type:         pkg.JavaPkg,
-				MetadataType: pkg.JavaMetadataType,
-				Metadata: pkg.JavaMetadata{
-					VirtualPath:   virtualPath,
-					PomProperties: propsObj,
-					Parent:        parentPkg,
-				},
-			}
-
-			pkgKey := uniquePkgKey(&p)
-
-			// the name/version pair matches...
-			matchesParentPkg := pkgKey == parentKey
-
-			if parentPkg != nil {
-				// the virtual path matches...
-				matchesParentPkg = matchesParentPkg || parentPkg.Metadata.(pkg.JavaMetadata).VirtualPath == virtualPath
-
-				// the pom artifactId has the parent name or vice versa
-				if propsObj.ArtifactID != "" {
-					matchesParentPkg = matchesParentPkg || strings.Contains(parentPkg.Name, propsObj.ArtifactID) || strings.Contains(propsObj.ArtifactID, parentPkg.Name)
-				}
-
-				if matchesParentPkg {
-					// we've run across more information about our parent package, add this info to the parent package metadata
-					// the pom properties is typically a better source of information for name and version than the manifest
-					if p.Name != parentPkg.Name {
-						parentPkg.Name = p.Name
-					}
-					if p.Version != parentPkg.Version {
-						parentPkg.Version = p.Version
-					}
-
-					parentMetadata, ok := parentPkg.Metadata.(pkg.JavaMetadata)
-					if ok {
-						parentMetadata.PomProperties = propsObj
-						parentPkg.Metadata = parentMetadata
-					}
-				}
-			}
-
-			if !matchesParentPkg && !j.discoveredPkgs.Contains(pkgKey) {
-				// only keep packages we haven't seen yet (and are not related to the parent package)
-				pkgs = append(pkgs, p)
-			}
+		pkgFromPom := j.newPackageFromPomProperties(*pomProperties, parentPkg)
+		if pkgFromPom != nil {
+			pkgs = append(pkgs, *pkgFromPom)
 		}
 	}
 	return pkgs, nil
+}
+
+// packagesFromPomProperties processes a single Maven POM properties for a given parent package, returning all listed Java packages found and
+// associating each discovered package to the given parent package.
+func (j *archiveParser) newPackageFromPomProperties(pomProperties pkg.PomProperties, parentPkg *pkg.Package) *pkg.Package {
+	// keep the artifact name within the virtual path if this package does not match the parent package
+	vPathSuffix := ""
+	if !strings.HasPrefix(pomProperties.ArtifactID, parentPkg.Name) {
+		vPathSuffix += ":" + pomProperties.ArtifactID
+	}
+	virtualPath := j.virtualPath + vPathSuffix
+
+	// discovered props = new package
+	p := pkg.Package{
+		Name:         pomProperties.ArtifactID,
+		Version:      pomProperties.Version,
+		Language:     pkg.Java,
+		Type:         pomProperties.PkgTypeIndicated(),
+		MetadataType: pkg.JavaMetadataType,
+		Metadata: pkg.JavaMetadata{
+			VirtualPath:   virtualPath,
+			PomProperties: &pomProperties,
+			Parent:        parentPkg,
+		},
+	}
+
+	if packageIdentitiesMatch(p, parentPkg) {
+		updatePackage(p, parentPkg)
+		return nil
+	}
+
+	return &p
 }
 
 // discoverPkgsFromNestedArchives finds Java archives within Java archives, returning all listed Java packages found and
 // associating each discovered package to the given parent package.
 func (j *archiveParser) discoverPkgsFromNestedArchives(parentPkg *pkg.Package) ([]pkg.Package, error) {
 	var pkgs = make([]pkg.Package, 0)
-
-	if !j.detectNested {
-		return pkgs, nil
-	}
 
 	// search and parse pom.properties files & fetch the contents
 	openers, err := file.ExtractFromZipToUniqueTempFile(j.archivePath, j.contentPath, j.fileManifest.GlobMatch(archiveFormatGlobs...)...)
@@ -295,4 +266,51 @@ func (j *archiveParser) discoverPkgsFromNestedArchives(parentPkg *pkg.Package) (
 	}
 
 	return pkgs, nil
+}
+
+func packageIdentitiesMatch(p pkg.Package, parentPkg *pkg.Package) bool {
+	// the name/version pair matches...
+	if uniquePkgKey(&p) == uniquePkgKey(parentPkg) {
+		return true
+	}
+
+	metadata := p.Metadata.(pkg.JavaMetadata)
+
+	// the virtual path matches...
+	if parentPkg.Metadata.(pkg.JavaMetadata).VirtualPath == metadata.VirtualPath {
+		return true
+	}
+
+	// the pom artifactId is the parent name
+	// note: you CANNOT use name-is-subset-of-artifact-id or vice versa --this is too generic. Shaded jars are a good
+	// example of this: where the package name is "cloudbees-analytics-segment-driver" and a child is "analytics", but
+	// they do not indicate the same package.
+	if metadata.PomProperties.ArtifactID != "" && parentPkg.Name == metadata.PomProperties.ArtifactID {
+		return true
+	}
+
+	return false
+}
+
+func updatePackage(p pkg.Package, parentPkg *pkg.Package) {
+	// we've run across more information about our parent package, add this info to the parent package metadata
+	// the pom properties is typically a better source of information for name and version than the manifest
+	parentPkg.Name = p.Name
+	parentPkg.Version = p.Version
+
+	// we may have learned more about the type via data in the pom properties
+	parentPkg.Type = p.Type
+
+	metadata, ok := p.Metadata.(pkg.JavaMetadata)
+	if !ok {
+		return
+	}
+	pomPropertiesCopy := *metadata.PomProperties
+
+	// keep the pom properties, but don't overwrite existing pom properties
+	parentMetadata, ok := parentPkg.Metadata.(pkg.JavaMetadata)
+	if ok && parentMetadata.PomProperties == nil {
+		parentMetadata.PomProperties = &pomPropertiesCopy
+		parentPkg.Metadata = parentMetadata
+	}
 }

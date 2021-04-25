@@ -1,6 +1,21 @@
 package pkg
 
-import "github.com/package-url/packageurl-go"
+import (
+	"strings"
+
+	"github.com/anchore/syft/internal"
+	"github.com/package-url/packageurl-go"
+)
+
+const JiraPluginPomPropertiesGroupID = "com.atlassian.jira.plugins"
+
+var JenkinsPluginPomPropertiesGroupIDs = []string{
+	"io.jenkins.plugins",
+	"org.jenkins.plugins",
+	"org.jenkins-ci.plugins",
+	"io.jenkins-ci.plugins",
+	"com.cloudbees.jenkins.plugins",
+}
 
 // JavaMetadata encapsulates all Java ecosystem metadata for a package as well as an (optional) parent relationship.
 type JavaMetadata struct {
@@ -18,6 +33,15 @@ type PomProperties struct {
 	ArtifactID string            `mapstructure:"artifactId" json:"artifactId"`
 	Version    string            `mapstructure:"version" json:"version"`
 	Extra      map[string]string `mapstructure:",remain" json:"extraFields"`
+}
+
+// PkgTypeIndicated returns the package Type indicated by the data contained in the PomProperties.
+func (p PomProperties) PkgTypeIndicated() Type {
+	if internal.HasAnyOfPrefixes(p.GroupID, JenkinsPluginPomPropertiesGroupIDs...) || strings.Contains(p.GroupID, ".jenkins.plugin") {
+		return JenkinsPluginPkg
+	}
+
+	return JavaPkg
 }
 
 // JavaManifest represents the fields of interest extracted from a Java archive's META-INF/MANIFEST.MF file.

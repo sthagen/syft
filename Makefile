@@ -3,7 +3,7 @@ TEMPDIR = ./.tmp
 RESULTSDIR = test/results
 COVER_REPORT = $(RESULTSDIR)/unit-coverage-details.txt
 COVER_TOTAL = $(RESULTSDIR)/unit-coverage-summary.txt
-LINTCMD = $(TEMPDIR)/golangci-lint run --tests=false --config .golangci.yaml
+LINTCMD = $(TEMPDIR)/golangci-lint run --tests=false --timeout=2m --config .golangci.yaml
 ACC_TEST_IMAGE = centos:8.2.2004
 ACC_DIR = ./test/acceptance
 BOLD := $(shell tput -T linux bold)
@@ -108,6 +108,7 @@ bootstrap-tools: $(TEMPDIR)
 .PHONY: bootstrap-go
 bootstrap-go:
 	go mod download
+	go mod tidy # note: it is important that the go.sum is kept in a consistent state at all times (especially during release)
 
 .PHONY: bootstrap
 bootstrap: $(RESULTSDIR) bootstrap-go bootstrap-tools ## Download and install all go dependencies (+ prep tooling in the ./tmp dir)
