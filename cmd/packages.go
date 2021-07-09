@@ -6,29 +6,31 @@ import (
 	"io/ioutil"
 	"os"
 
-	"github.com/spf13/viper"
-
+	"github.com/anchore/stereoscope"
 	"github.com/anchore/syft/internal"
 	"github.com/anchore/syft/internal/anchore"
 	"github.com/anchore/syft/internal/bus"
 	"github.com/anchore/syft/internal/log"
-	"github.com/anchore/syft/internal/presenter/packages"
 	"github.com/anchore/syft/internal/ui"
 	"github.com/anchore/syft/syft"
 	"github.com/anchore/syft/syft/distro"
 	"github.com/anchore/syft/syft/event"
 	"github.com/anchore/syft/syft/pkg"
+	"github.com/anchore/syft/syft/presenter/packages"
 	"github.com/anchore/syft/syft/source"
 	"github.com/pkg/profile"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
+	"github.com/spf13/viper"
 	"github.com/wagoodman/go-partybus"
 )
 
 const (
 	packagesExample = `  {{.appName}} {{.command}} alpine:latest                a summary of discovered packages
   {{.appName}} {{.command}} alpine:latest -o json        show all possible cataloging details
-  {{.appName}} {{.command}} alpine:latest -o cyclonedx   show a CycloneDX SBOM
+  {{.appName}} {{.command}} alpine:latest -o cyclonedx   show a CycloneDX formatted SBOM
+  {{.appName}} {{.command}} alpine:latest -o spdx        show a SPDX 2.2 tag-value formatted SBOM
+  {{.appName}} {{.command}} alpine:latest -o spdx-json   show a SPDX 2.2 JSON formatted SBOM
   {{.appName}} {{.command}} alpine:latest -vv            show verbose debug information
 
   Supports the following image sources:
@@ -47,7 +49,7 @@ const (
 
 var (
 	packagesPresenterOpt packages.PresenterOption
-	packagesArgs         = cobra.MinimumNArgs(1)
+	packagesArgs         = cobra.MaximumNArgs(1)
 	packagesCmd          = &cobra.Command{
 		Use:   "packages [SOURCE]",
 		Short: "Generate a package SBOM",
@@ -65,8 +67,7 @@ var (
 				if err != nil {
 					return err
 				}
-				// silently exit
-				return fmt.Errorf("")
+				return fmt.Errorf("an image/directory argument is required")
 			}
 
 			// set the presenter
@@ -137,6 +138,11 @@ func setPackageFlags(flags *pflag.FlagSet) {
 		"overwrite-existing-image", false,
 		"overwrite an existing image during the upload to Anchore Enterprise",
 	)
+
+	flags.Uint(
+		"import-timeout", 30,
+		"set a timeout duration (in seconds) for the upload to Anchore Enterprise",
+	)
 }
 
 func bindPackagesConfigOptions(flags *pflag.FlagSet) error {
@@ -172,13 +178,23 @@ func bindPackagesConfigOptions(flags *pflag.FlagSet) error {
 		return err
 	}
 
+	if err := viper.BindPFlag("anchore.import-timeout", flags.Lookup("import-timeout")); err != nil {
+		return err
+	}
+
 	return nil
 }
 
 func packagesExec(_ *cobra.Command, args []string) error {
-	errs := packagesExecWorker(args[0])
-	ux := ui.Select(appConfig.CliOptions.Verbosity > 0, appConfig.Quiet)
-	return ux(errs, eventSubscription)
+	// could be an image or a directory, with or without a scheme
+	userInput := args[0]
+	return eventLoop(
+		packagesExecWorker(userInput),
+		setupSignals(),
+		eventSubscription,
+		ui.Select(appConfig.CliOptions.Verbosity > 0, appConfig.Quiet),
+		stereoscope.Cleanup,
+	)
 }
 
 func packagesExecWorker(userInput string) <-chan error {
@@ -190,14 +206,14 @@ func packagesExecWorker(userInput string) <-chan error {
 
 		src, cleanup, err := source.New(userInput, appConfig.Registry.ToOptions())
 		if err != nil {
-			errs <- fmt.Errorf("failed to determine image source: %+v", err)
+			errs <- fmt.Errorf("failed to determine image source: %w", err)
 			return
 		}
 		defer cleanup()
 
 		catalog, d, err := syft.CatalogPackages(src, appConfig.Package.Cataloger.ScopeOpt)
 		if err != nil {
-			errs <- fmt.Errorf("failed to catalog input: %+v", err)
+			errs <- fmt.Errorf("failed to catalog input: %w", err)
 			return
 		}
 
@@ -251,7 +267,7 @@ func runPackageSbomUpload(src source.Source, s source.Metadata, catalog *pkg.Cat
 		Password: appConfig.Anchore.Password,
 	})
 	if err != nil {
-		return fmt.Errorf("failed to create anchore client: %+v", err)
+		return fmt.Errorf("failed to create anchore client: %w", err)
 	}
 
 	importCfg := anchore.ImportConfig{
@@ -262,6 +278,7 @@ func runPackageSbomUpload(src source.Source, s source.Metadata, catalog *pkg.Cat
 		Dockerfile:              dockerfileContents,
 		OverwriteExistingUpload: appConfig.Anchore.OverwriteExistingImage,
 		Scope:                   scope,
+		Timeout:                 appConfig.Anchore.ImportTimeout,
 	}
 
 	if err := c.Import(context.Background(), importCfg); err != nil {

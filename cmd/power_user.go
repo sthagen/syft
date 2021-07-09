@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"sync"
 
+	"github.com/anchore/stereoscope"
 	"github.com/anchore/syft/internal"
-
 	"github.com/anchore/syft/internal/bus"
 	"github.com/anchore/syft/internal/presenter/poweruser"
 	"github.com/anchore/syft/internal/ui"
@@ -34,11 +34,19 @@ var powerUserCmd = &cobra.Command{
 		"appName": internal.ApplicationName,
 		"command": "power-user",
 	}),
-	Args:          cobra.ExactArgs(1),
+	Args:          cobra.MaximumNArgs(1),
 	Hidden:        true,
 	SilenceUsage:  true,
 	SilenceErrors: true,
 	PreRunE: func(cmd *cobra.Command, args []string) error {
+		if len(args) == 0 {
+			err := cmd.Help()
+			if err != nil {
+				return err
+			}
+			return fmt.Errorf("an image/directory argument is required")
+		}
+
 		if appConfig.Dev.ProfileCPU && appConfig.Dev.ProfileMem {
 			return fmt.Errorf("cannot profile CPU and memory simultaneously")
 		}
@@ -63,9 +71,15 @@ func init() {
 }
 
 func powerUserExec(_ *cobra.Command, args []string) error {
-	errs := powerUserExecWorker(args[0])
-	ux := ui.Select(appConfig.CliOptions.Verbosity > 0, appConfig.Quiet)
-	return ux(errs, eventSubscription)
+	// could be an image or a directory, with or without a scheme
+	userInput := args[0]
+	return eventLoop(
+		powerUserExecWorker(userInput),
+		setupSignals(),
+		eventSubscription,
+		ui.Select(appConfig.CliOptions.Verbosity > 0, appConfig.Quiet),
+		stereoscope.Cleanup,
+	)
 }
 
 func powerUserExecWorker(userInput string) <-chan error {

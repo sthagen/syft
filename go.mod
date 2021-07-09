@@ -7,10 +7,10 @@ require (
 	github.com/adrg/xdg v0.2.1
 	github.com/alecthomas/jsonschema v0.0.0-20210301060011-54c507b6f074
 	github.com/anchore/client-go v0.0.0-20210222170800-9c70f9b80bcf
-	github.com/anchore/go-rpmdb v0.0.0-20210415132930-2460011e83c6
+	github.com/anchore/go-rpmdb v0.0.0-20210602151223-1f0f707a2894
 	github.com/anchore/go-testutils v0.0.0-20200925183923-d5f45b0d3c04
 	github.com/anchore/go-version v1.2.2-0.20200701162849-18adb9c92b9b
-	github.com/anchore/stereoscope v0.0.0-20210413221244-d577f30b19e6
+	github.com/anchore/stereoscope v0.0.0-20210524175238-3b7662f3a66f
 	github.com/antihax/optional v1.0.0
 	github.com/bmatcuk/doublestar/v2 v2.0.4
 	github.com/docker/docker v17.12.0-ce-rc1.0.20200309214505-aa6a9891b09c+incompatible
@@ -30,12 +30,13 @@ require (
 	github.com/scylladb/go-set v1.0.2
 	github.com/sergi/go-diff v1.1.0
 	github.com/sirupsen/logrus v1.6.0
+	github.com/spdx/tools-golang v0.1.0
 	github.com/spf13/afero v1.2.2
 	github.com/spf13/cobra v1.0.1-0.20200909172742-8a63648dd905
 	github.com/spf13/pflag v1.0.5
 	github.com/spf13/viper v1.7.0
-	github.com/stretchr/testify v1.6.0
-	github.com/wagoodman/go-partybus v0.0.0-20200526224238-eb215533f07d
+	github.com/stretchr/testify v1.7.0
+	github.com/wagoodman/go-partybus v0.0.0-20210627031916-db1f5573bbc5
 	github.com/wagoodman/go-progress v0.0.0-20200731105512-1020f39e6240
 	github.com/wagoodman/jotframe v0.0.0-20200730190914-3517092dd163
 	github.com/x-cray/logrus-prefixed-formatter v0.5.2

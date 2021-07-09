@@ -5,9 +5,8 @@ import (
 	"fmt"
 	"io"
 	"regexp"
-	"strings"
 
-	"github.com/anchore/syft/internal/log"
+	"github.com/anchore/syft/internal"
 	"github.com/anchore/syft/syft/pkg"
 	"github.com/anchore/syft/syft/pkg/cataloger/common"
 )
@@ -15,59 +14,62 @@ import (
 // integrity check
 var _ common.ParserFn = parseYarnLock
 
-var composedNameExp = regexp.MustCompile("^\"(@{1}[^@]+)")
-var simpleNameExp = regexp.MustCompile(`^[a-zA-Z\-]+@`)
-var versionExp = regexp.MustCompile(`^\W+(version)\W+`)
+var (
+	// composedNameExp matches the "composed" variant of yarn.lock entry names,
+	// where the name appears in quotes and is prefixed with @<some-namespace>.
+	// For example: "@babel/code-frame@^7.0.0"
+	composedNameExp = regexp.MustCompile(`^"(@[^@]+)`)
+
+	// simpleNameExp matches the "simple" variant of yarn.lock entry names, for packages with no namespace prefix.
+	// For example: aws-sdk@2.706.0
+	simpleNameExp = regexp.MustCompile(`^(\w[\w-_.]*)@`)
+
+	// versionExp matches the "version" line of a yarn.lock entry and captures the version value.
+	// For example: version "4.10.1" (...and the value "4.10.1" is captured)
+	versionExp = regexp.MustCompile(`^\W+version\W+"([\w-_.]+)"`)
+)
+
+const (
+	noPackage = ""
+	noVersion = ""
+)
 
 func parseYarnLock(_ string, reader io.Reader) ([]pkg.Package, error) {
-	packages := make([]pkg.Package, 0)
-	fields := make(map[string]string)
-	var currentName string
+	var packages []pkg.Package
 
 	scanner := bufio.NewScanner(reader)
+	parsedPackages := internal.NewStringSet()
+	currentPackage := noPackage
 
 	for scanner.Scan() {
 		line := scanner.Text()
-		line = strings.TrimRight(line, "\n")
 
-		// create the entry so that the loop can keep appending versions later
-		_, ok := fields[currentName]
-		if !ok {
-			fields[currentName] = ""
-		}
+		if currentPackage == noPackage {
+			// Scan until we find the next package
 
-		switch {
-		case composedNameExp.MatchString(line):
-			name := composedNameExp.FindString(line)
-			if len(name) == 0 {
-				log.Warnf("unable to parse yarn.lock line: %q", line)
-			}
-			currentName = strings.TrimLeft(name, "\"")
-		case simpleNameExp.MatchString(line):
-			parts := strings.Split(line, "@")
-			currentName = parts[0]
-		case versionExp.MatchString(line):
-			parts := strings.Split(line, " \"")
-			version := parts[len(parts)-1]
-
-			versions, ok := fields[currentName]
-			if !ok {
-				return nil, fmt.Errorf("no previous key exists, expecting: %s", currentName)
-			}
-
-			if strings.Contains(versions, version) {
-				// already exists from another dependency declaration
+			packageName := findPackageName(line)
+			if packageName == noPackage {
 				continue
 			}
 
-			// append the version as a string so that we can check on it later
-			fields[currentName] = versions + " " + version
-			packages = append(packages, pkg.Package{
-				Name:     currentName,
-				Version:  strings.Trim(version, "\""),
-				Language: pkg.JavaScript,
-				Type:     pkg.NpmPkg,
-			})
+			if parsedPackages.Contains(packageName) {
+				// We don't parse repeated package declarations.
+				continue
+			}
+
+			currentPackage = packageName
+			parsedPackages.Add(currentPackage)
+
+			continue
+		}
+
+		// We've found the package entry, now we just need the version
+
+		if version := findPackageVersion(line); version != noVersion {
+			packages = append(packages, newYarnLockPackage(currentPackage, version))
+			currentPackage = noPackage
+
+			continue
 		}
 	}
 
@@ -76,4 +78,33 @@ func parseYarnLock(_ string, reader io.Reader) ([]pkg.Package, error) {
 	}
 
 	return packages, nil
+}
+
+func findPackageName(line string) string {
+	if matches := composedNameExp.FindStringSubmatch(line); len(matches) >= 2 {
+		return matches[1]
+	}
+
+	if matches := simpleNameExp.FindStringSubmatch(line); len(matches) >= 2 {
+		return matches[1]
+	}
+
+	return noPackage
+}
+
+func findPackageVersion(line string) string {
+	if matches := versionExp.FindStringSubmatch(line); len(matches) >= 2 {
+		return matches[1]
+	}
+
+	return noVersion
+}
+
+func newYarnLockPackage(name, version string) pkg.Package {
+	return pkg.Package{
+		Name:     name,
+		Version:  version,
+		Language: pkg.JavaScript,
+		Type:     pkg.NpmPkg,
+	}
 }

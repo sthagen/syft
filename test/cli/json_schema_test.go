@@ -60,18 +60,18 @@ func TestJSONSchema(t *testing.T) {
 				args = append(args, a)
 			}
 
-			_, stdout, _ := runSyftCommand(t, nil, args...)
+			_, stdout, stderr := runSyft(t, nil, args...)
 
 			if len(strings.Trim(stdout, "\n ")) < 100 {
-				t.Fatalf("bad syft output: %q", stdout)
+				t.Fatalf("bad syft run:\noutput: %q\n:error: %q", stdout, stderr)
 			}
 
-			validateAgainstV1Schema(t, stdout)
+			validateJsonAgainstSchema(t, stdout)
 		})
 	}
 }
 
-func validateAgainstV1Schema(t testing.TB, json string) {
+func validateJsonAgainstSchema(t testing.TB, json string) {
 	fullSchemaPath := path.Join(repoRoot(t), jsonSchemaPath, fmt.Sprintf("schema-%s.json", internal.JSONSchemaVersion))
 	schemaLoader := gojsonschema.NewReferenceLoader(fmt.Sprintf("file://%s", fullSchemaPath))
 	documentLoader := gojsonschema.NewStringLoader(json)

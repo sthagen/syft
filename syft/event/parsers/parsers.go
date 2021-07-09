@@ -6,9 +6,9 @@ package parsers
 import (
 	"fmt"
 
-	"github.com/anchore/syft/syft/file"
+	"github.com/anchore/syft/syft/presenter"
 
-	"github.com/anchore/syft/internal/presenter"
+	"github.com/anchore/syft/syft/file"
 
 	"github.com/wagoodman/go-progress"
 
@@ -92,6 +92,24 @@ func ParseFileDigestsCatalogingStarted(e partybus.Event) (progress.StagedProgres
 	}
 
 	return prog, nil
+}
+
+func ParseFileIndexingStarted(e partybus.Event) (string, progress.StagedProgressable, error) {
+	if err := checkEventType(e.Type, event.FileIndexingStarted); err != nil {
+		return "", nil, err
+	}
+
+	path, ok := e.Source.(string)
+	if !ok {
+		return "", nil, newPayloadErr(e.Type, "Source", e.Source)
+	}
+
+	prog, ok := e.Value.(progress.StagedProgressable)
+	if !ok {
+		return "", nil, newPayloadErr(e.Type, "Value", e.Value)
+	}
+
+	return path, prog, nil
 }
 
 func ParsePresenterReady(e partybus.Event) (presenter.Presenter, error) {

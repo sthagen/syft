@@ -17,6 +17,15 @@ func TestPackagesCmdFlags(t *testing.T) {
 		assertions []traitAssertion
 	}{
 		{
+			name: "no-args-shows-help",
+			args: []string{"packages"},
+			assertions: []traitAssertion{
+				assertInOutput("an image/directory argument is required"),              // specific error that should be shown
+				assertInOutput("Generate a packaged-based Software Bill Of Materials"), // excerpt from help description
+				assertFailingReturnCode,
+			},
+		},
+		{
 			name: "json-output-flag",
 			args: []string{"packages", "-o", "json", request},
 			assertions: []traitAssertion{
@@ -125,7 +134,7 @@ func TestPackagesCmdFlags(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			cmd, stdout, stderr := runSyftCommand(t, test.env, test.args...)
+			cmd, stdout, stderr := runSyft(t, test.env, test.args...)
 			for _, traitFn := range test.assertions {
 				traitFn(t, stdout, stderr, cmd.ProcessState.ExitCode())
 			}
@@ -165,7 +174,7 @@ func TestRegistryAuth(t *testing.T) {
 			assertions: []traitAssertion{
 				assertInOutput("source=OciRegistry"),
 				assertInOutput("localhost:5000/something:latest"),
-				assertInOutput(`using registry credentials for "localhost:5000"`),
+				assertInOutput(`using basic auth for registry "localhost:5000"`),
 			},
 		},
 		{
@@ -178,7 +187,7 @@ func TestRegistryAuth(t *testing.T) {
 			assertions: []traitAssertion{
 				assertInOutput("source=OciRegistry"),
 				assertInOutput("localhost:5000/something:latest"),
-				assertInOutput(`using registry token for "localhost:5000"`),
+				assertInOutput(`using token for registry "localhost:5000"`),
 			},
 		},
 		{
@@ -197,7 +206,7 @@ func TestRegistryAuth(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			cmd, stdout, stderr := runSyftCommand(t, test.env, test.args...)
+			cmd, stdout, stderr := runSyft(t, test.env, test.args...)
 			for _, traitAssertionFn := range test.assertions {
 				traitAssertionFn(t, stdout, stderr, cmd.ProcessState.ExitCode())
 			}

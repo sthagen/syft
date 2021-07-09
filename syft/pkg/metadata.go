@@ -14,4 +14,17 @@ const (
 	RpmdbMetadataType            MetadataType = "RpmdbMetadata"
 	PythonPackageMetadataType    MetadataType = "PythonPackageMetadata"
 	RustCargoPackageMetadataType MetadataType = "RustCargoPackageMetadata"
+	KbPackageMetadataType        MetadataType = "KbPackageMetadata"
 )
+
+var AllMetadataTypes = []MetadataType{
+	ApkMetadataType,
+	DpkgMetadataType,
+	GemMetadataType,
+	JavaMetadataType,
+	NpmPackageJSONMetadataType,
+	RpmdbMetadataType,
+	PythonPackageMetadataType,
+	RustCargoPackageMetadataType,
+	KbPackageMetadataType,
+}

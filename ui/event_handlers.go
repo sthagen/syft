@@ -8,12 +8,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/anchore/stereoscope/pkg/image/docker"
-	"github.com/dustin/go-humanize"
-
 	stereoEventParsers "github.com/anchore/stereoscope/pkg/event/parsers"
-	"github.com/anchore/syft/internal/ui/common"
+	"github.com/anchore/stereoscope/pkg/image/docker"
+	"github.com/anchore/syft/internal"
+	"github.com/anchore/syft/internal/ui/components"
 	syftEventParsers "github.com/anchore/syft/syft/event/parsers"
+	"github.com/dustin/go-humanize"
 	"github.com/gookit/color"
 	"github.com/wagoodman/go-partybus"
 	"github.com/wagoodman/go-progress"
@@ -22,8 +22,8 @@ import (
 )
 
 const maxBarWidth = 50
-const statusSet = common.SpinnerDotSet // SpinnerCircleOutlineSet
-const completedStatus = "✔"            // "●"
+const statusSet = components.SpinnerDotSet
+const completedStatus = "✔"
 const tileFormat = color.Bold
 const interval = 150 * time.Millisecond
 
@@ -41,14 +41,14 @@ var (
 
 // startProcess is a helper function for providing common elements for long-running UI elements (such as a
 // progress bar formatter and status spinner)
-func startProcess() (format.Simple, *common.Spinner) {
+func startProcess() (format.Simple, *components.Spinner) {
 	width, _ := frame.GetTerminalSize()
 	barWidth := int(0.25 * float64(width))
 	if barWidth > maxBarWidth {
 		barWidth = maxBarWidth
 	}
 	formatter := format.NewSimpleWithTheme(barWidth, format.HeavyNoBarTheme, format.ColorCompleted, format.ColorTodo)
-	spinner := common.NewSpinner(statusSet)
+	spinner := components.NewSpinner(statusSet)
 
 	return formatter, &spinner
 }
@@ -76,7 +76,7 @@ func formatDockerPullPhase(phase docker.PullPhase, inputStr string) string {
 
 // nolint:funlen
 // formatDockerImagePullStatus writes the docker image pull status summarized into a single line for the given state.
-func formatDockerImagePullStatus(pullStatus *docker.PullStatus, spinner *common.Spinner, line *frame.Line) {
+func formatDockerImagePullStatus(pullStatus *docker.PullStatus, spinner *components.Spinner, line *frame.Line) {
 	var size, current uint64
 
 	title := tileFormat.Sprint("Pulling image")
@@ -395,6 +395,49 @@ func FileMetadataCatalogerStartedHandler(ctx context.Context, fr *frame.Frame, e
 
 		spin := color.Green.Sprint(completedStatus)
 		title = tileFormat.Sprint("Cataloged file metadata")
+		_, _ = io.WriteString(line, fmt.Sprintf(statusTitleTemplate, spin, title))
+	}()
+	return err
+}
+
+// FileIndexingStartedHandler shows the intermittent indexing progress from a directory resolver.
+// nolint:dupl
+func FileIndexingStartedHandler(ctx context.Context, fr *frame.Frame, event partybus.Event, wg *sync.WaitGroup) error {
+	path, prog, err := syftEventParsers.ParseFileIndexingStarted(event)
+	if err != nil {
+		return fmt.Errorf("bad %s event: %w", event.Type, err)
+	}
+
+	line, err := fr.Append()
+	if err != nil {
+		return err
+	}
+	wg.Add(1)
+
+	_, spinner := startProcess()
+	stream := progress.Stream(ctx, prog, interval)
+	title := tileFormat.Sprintf("Indexing %s", path)
+
+	formatFn := func(_ progress.Progress) {
+		spin := color.Magenta.Sprint(spinner.Next())
+		if err != nil {
+			_, _ = io.WriteString(line, fmt.Sprintf("Error: %+v", err))
+		} else {
+			auxInfo := auxInfoFormat.Sprintf("[file: %s]", internal.TruncateMiddleEllipsis(prog.Stage(), 100))
+			_, _ = io.WriteString(line, fmt.Sprintf(statusTitleTemplate+"%s", spin, title, auxInfo))
+		}
+	}
+
+	go func() {
+		defer wg.Done()
+
+		formatFn(progress.Progress{})
+		for p := range stream {
+			formatFn(p)
+		}
+
+		spin := color.Green.Sprint(completedStatus)
+		title = tileFormat.Sprintf("Indexed %s", path)
 		_, _ = io.WriteString(line, fmt.Sprintf(statusTitleTemplate, spin, title))
 	}()
 	return err

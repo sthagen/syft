@@ -15,7 +15,7 @@ RESET := $(shell tput -T linux sgr0)
 TITLE := $(BOLD)$(PURPLE)
 SUCCESS := $(BOLD)$(GREEN)
 # the quality gate lower threshold for unit test total % coverage (by function statements)
-COVERAGE_THRESHOLD := 70
+COVERAGE_THRESHOLD := 65
 # CI cache busting values; change these if you want CI to not use previous stored cache
 INTEGRATION_CACHE_BUSTER="88738d2f"
 CLI_CACHE_BUSTER="789bacdf"
@@ -115,7 +115,7 @@ bootstrap: $(RESULTSDIR) bootstrap-go bootstrap-tools ## Download and install al
 	$(call title,Bootstrapping dependencies)
 
 .PHONY: static-analysis
-static-analysis: lint check-licenses
+static-analysis: lint check-go-mod-tidy check-licenses
 
 .PHONY: lint
 lint: ## Run gofmt + golangci lint checks
@@ -136,10 +136,14 @@ lint-fix: ## Auto-format all source code + run golangci lint fixers
 	$(call title,Running lint fixers)
 	gofmt -w -s .
 	$(LINTCMD) --fix
+	go mod tidy
 
 .PHONY: check-licenses
 check-licenses:
 	$(TEMPDIR)/bouncer check
+
+check-go-mod-tidy:
+	@ .github/scripts/go-mod-tidy-check.sh && echo "go.mod and go.sum are tidy!"
 
 .PHONY: validate-cyclonedx-schema
 validate-cyclonedx-schema:

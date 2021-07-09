@@ -49,9 +49,7 @@ func New(userInput string, registryOptions *image.RegistryOptions) (Source, func
 
 	case ImageScheme:
 		img, err := stereoscope.GetImageFromSource(location, imageSource, registryOptions)
-		cleanup := func() {
-			stereoscope.Cleanup()
-		}
+		cleanup := stereoscope.Cleanup
 
 		if err != nil || img == nil {
 			return Source{}, cleanup, fmt.Errorf("could not fetch image '%s': %w", location, err)
@@ -96,7 +94,7 @@ func NewFromImage(img *image.Image, userImageStr string) (Source, error) {
 func (s Source) FileResolver(scope Scope) (FileResolver, error) {
 	switch s.Metadata.Scheme {
 	case DirectoryScheme:
-		return newDirectoryResolver(s.Metadata.Path), nil
+		return newDirectoryResolver(s.Metadata.Path)
 	case ImageScheme:
 		switch scope {
 		case SquashedScope:
